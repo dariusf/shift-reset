@@ -1,0 +1,4 @@
+(library
+ (name shift_reset_interpret)
+ (inline_tests)
+ (preprocess (pps ppx_expect ppx_deriving.std)))
