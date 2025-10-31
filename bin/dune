@@ -1,0 +1,4 @@
+(executable
+ (public_name shift-reset)
+ (name main)
+ (libraries shift_reset))

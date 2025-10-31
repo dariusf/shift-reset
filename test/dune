@@ -1,0 +1,5 @@
+(library
+ (name test_shift_reset)
+ (libraries shift_reset)
+ (inline_tests)
+ (preprocess (pps ppx_expect ppx_deriving.std)))
