@@ -26,15 +26,17 @@ type expr =
 [@@deriving show { with_path = false }]
 
 (* A lambda calculus interpreter *)
-module Simple = struct
+module LambdaCalculus = struct
   type value =
-    | Lambda of var * expr
+    | Clo of env * var * expr
     | Int of int
+  [@@deriving show { with_path = false }]
 
-  type env = value SMap.t
+  and env = value SMap.t
 
   let rec interp : env -> expr -> value =
-   fun env -> function
+   fun env e ->
+    match e with
     | Int i -> Int i
     | Plus (e1, e2) ->
       (match interp env e1 with
@@ -44,30 +46,105 @@ module Simple = struct
         | _ -> failwith "cannot add non-ints")
       | _ -> failwith "cannot add non-ints")
     | Var x -> SMap.find x env
-    | Abs (x, e) -> Lambda (x, e)
+    | Abs (x, e) -> Clo (env, x, e)
     | App (e1, e2) ->
       (match interp env e1 with
-      | Lambda (x, e3) ->
+      | Clo (envc, x, e3) ->
         let v = interp env e2 in
-        let env1 = SMap.add x v env in
-        interp env1 e3
+        interp (SMap.add x v envc) e3
       | _ -> failwith "cannot apply non-lambda")
     | Shift (_, _) | Reset _ -> failwith "cannot be implemented"
+end
+
+module ECPS = struct
+  let fresh =
+    let i = ref 0 in
+    fun () ->
+      let r = !i in
+      incr i;
+      Format.asprintf "x%d" r
+
+  let id () =
+    let x = fresh () in
+    Abs (x, Var x)
+
+  open LambdaCalculus
+
+  let v2e (v : value) : expr =
+    match v with Int i -> Int i | Clo (_, x, e) -> Abs (x, e)
+
+  (* substitution of closed values into expressions, not capture-avoiding *)
+  let rec subst (e : expr) (v : value) x : expr =
+    match e with
+    | Int i -> Int i
+    | Plus (e1, e2) -> Plus (subst e1 v x, subst e2 v x)
+    | Var y -> if x = y then v2e v else e
+    | Abs (y, e) -> if x = y then Abs (y, e) else Abs (y, subst e v x)
+    | App (e1, e2) -> App (subst e1 v x, subst e2 v x)
+    | Shift (k, e) -> if x = k then Shift (k, e) else Shift (k, subst e v x)
+    | Reset e -> subst e v x
+
+  let rec cps (e : expr) : expr =
+    match e with
+    | Int i ->
+      let k = fresh () in
+      Abs (k, App (Var k, Int i))
+    | Plus (e1, e2) ->
+      let k, a1, a2 = (fresh (), fresh (), fresh ()) in
+      Abs
+        ( k,
+          App
+            ( cps e1,
+              Abs
+                (a1, App (cps e2, Abs (a2, App (Var k, Plus (Var a1, Var a2)))))
+            ) )
+    | Var x ->
+      let k = fresh () in
+      Abs (k, App (Var k, Var x))
+    | Abs (x, e) ->
+      let k = fresh () in
+      Abs (k, App (Var k, Abs (x, cps e)))
+    | App (e1, e2) ->
+      let k, f, x = (fresh (), fresh (), fresh ()) in
+      Abs
+        ( k,
+          App
+            ( cps e1,
+              Abs (f, App (cps e2, Abs (x, App (App (Var f, Var x), Var k)))) )
+        )
+    | Shift (k, e) ->
+      let kappa, a, kappa' = (fresh (), fresh (), fresh ()) in
+      let kk : value =
+        Clo
+          (SMap.empty, a, Abs (kappa', App (Var kappa', App (Var kappa, Var a))))
+      in
+      Abs (kappa, App (subst (cps e) kk k, id ()))
+    | Reset e ->
+      let k = fresh () in
+      Abs (k, App (Var k, App (cps e, id ())))
+
+  let interp : env -> expr -> value =
+   fun env e -> LambdaCalculus.interp env (App (cps e, id ()))
+
+  let%expect_test _ =
+    (* let expr a = a |> [%derive.show: expr] |> print_endline in *)
+    let value a = a |> [%derive.show: value] |> print_endline in
+    LambdaCalculus.interp SMap.empty (App (id (), Int 1)) |> value;
+    [%expect {| (Int 1) |}]
 end
 
 (* A continuation-composing interpreter *)
 (* https://ps-tuebingen-courses.github.io/pl1-lecture-notes/19-shift-reset/shift-reset.html *)
 module CPS = struct
   type value =
-    | Lambda of var * expr
+    | Clo of env * var * expr
     | Int of int
     | Cont of cont
   [@@deriving show { with_path = false }]
 
   and cont = value -> ans
   and ans = value
-
-  type env = value SMap.t
+  and env = value SMap.t
 
   (* interp : env -> expr -> (value -> ans) -> ans = *)
   (* can also use cont monad or let@ *)
@@ -83,14 +160,12 @@ module CPS = struct
             | _ -> failwith "cannot add non-ints")
         | _ -> failwith "cannot add non-ints")
     | Var x -> k (SMap.find x env)
-    | Abs (x, e) -> k (Lambda (x, e))
+    | Abs (x, e) -> k (Clo (env, x, e))
     | App (e1, e2) ->
       interp env e1 (function
         | Cont k1 -> interp env e2 (fun v2 -> k (k1 v2))
-        | Lambda (x, e3) ->
-          interp env e2 (fun v2 ->
-              let env1 = SMap.add x v2 env in
-              interp env1 e3 k)
+        | Clo (envc, x, e3) ->
+          interp env e2 (fun v2 -> interp (SMap.add x v2 envc) e3 k)
         | Int _ -> failwith "cannot apply non-lambda")
     | Shift (x, eb) ->
       let env1 = SMap.add x (Cont k) env in
@@ -116,7 +191,7 @@ end
 (* https://harrisongoldste.in/papers/drafts/wpe-ii.pdf *)
 module TwoCPS = struct
   type value =
-    | Lambda of var * expr
+    | Clo of env * var * expr
     | Int of int
     | Cont of cont
   [@@deriving show { with_path = false }]
@@ -124,8 +199,7 @@ module TwoCPS = struct
   and metacont = value -> ans
   and ans = value
   and cont = value -> metacont -> ans
-
-  type env = value SMap.t
+  and env = value SMap.t
 
   let rec interp : env -> expr -> cont -> metacont -> ans =
    fun env e k mk ->
@@ -145,7 +219,7 @@ module TwoCPS = struct
           | _ -> failwith "cannot add non-ints")
         mk
     | Var x -> k (SMap.find x env) mk
-    | Abs (x, e) -> k (Lambda (x, e)) mk
+    | Abs (x, e) -> k (Clo (env, x, e)) mk
     | App (e1, e2) ->
       interp env e1
         (fun v1 mk ->
@@ -153,8 +227,10 @@ module TwoCPS = struct
           | Int _ -> failwith "cannot apply non-lambda"
           | Cont k1 ->
             interp env e2 (fun v2 mk1 -> k1 v2 (fun v3 -> k v3 mk1)) mk
-          | Lambda (x, e3) ->
-            interp env e2 (fun v2 mk1 -> interp (SMap.add x v2 env) e3 k mk1) mk)
+          | Clo (envc, x, e3) ->
+            interp env e2
+              (fun v2 mk1 -> interp (SMap.add x v2 envc) e3 k mk1)
+              mk)
         mk
     | Shift (x, eb) ->
       (* let env1 = SMap.add x (Cont (fun x mk1 -> k x (fun w -> mk1 w))) env in *)

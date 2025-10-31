@@ -69,108 +69,124 @@ let%expect_test "shift0 and control" =
   |> test;
   [%expect {| shift |}]
 
-type regex =
-  | Emp
-  | Atom of int
-  | Seq of regex * regex
-  | Disj of regex * regex
+module Regex = struct
+  type regex =
+    | Emp
+    | Atom of int
+    | Seq of regex * regex
+    | Disj of regex * regex
 
-let interp r ns : bool =
-  let rec visit r ns : int list option =
-    match r with
-    | Emp -> Some ns
-    | Atom a -> (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None)
-    | Seq (r1, r2) ->
-      (match visit r1 ns with None -> None | Some rest -> visit r2 rest)
-    | Disj (_, _) -> failwith "?"
-  in
-  match visit r ns with Some [] -> true | _ -> false
+  module Simple = struct
+    let interp r ns : bool =
+      let rec visit r ns : int list option =
+        match r with
+        | Emp -> Some ns
+        | Atom a ->
+          (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None)
+        | Seq (r1, r2) ->
+          (match visit r1 ns with None -> None | Some rest -> visit r2 rest)
+        | Disj (_, _) -> failwith "?"
+      in
+      match visit r ns with Some [] -> true | _ -> false
+  end
 
-let rec visit_cps r ns k : int list option =
-  match r with
-  | Emp -> k (Some ns)
-  | Atom a -> k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None)
-  | Seq (r1, r2) ->
-    visit_cps r1 ns (function None -> None | Some rest -> visit_cps r2 rest k)
-  | Disj (r1, r2) ->
-    (match visit_cps r1 ns k with None -> visit_cps r2 ns k | r -> k r)
+  module CPS = struct
+    let rec visit r ns k : int list option =
+      match r with
+      | Emp -> k (Some ns)
+      | Atom a ->
+        k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None)
+      | Seq (r1, r2) ->
+        visit r1 ns (function None -> None | Some rest -> visit r2 rest k)
+      | Disj (r1, r2) ->
+        (match visit r1 ns k with None -> visit r2 ns k | r -> k r)
 
-let interp_cps r ns : bool =
-  match visit_cps r ns Fun.id with Some [] -> true | _ -> false
+    let interp r ns : bool =
+      match visit r ns Fun.id with Some [] -> true | _ -> false
+  end
 
-let rec visit_cps_m r ns k mk : int list option =
-  match r with
-  | Emp -> k (Some ns) mk
-  | Atom a -> k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None) mk
-  | Seq (r1, r2) ->
-    visit_cps_m r1 ns
-      (fun v1 mk1 ->
-        match v1 with None -> None | Some rest -> visit_cps_m r2 rest k mk1)
-      mk
-  | Disj (r1, r2) ->
-    (match visit_cps_m r1 ns k mk with
-    | None -> visit_cps_m r2 ns k mk
-    | r -> k r mk)
+  module TwoCPS = struct
+    let rec visit r ns k mk : int list option =
+      match r with
+      | Emp -> k (Some ns) mk
+      | Atom a ->
+        k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None) mk
+      | Seq (r1, r2) ->
+        visit r1 ns
+          (fun v1 mk1 ->
+            match v1 with None -> None | Some rest -> visit r2 rest k mk1)
+          mk
+      | Disj (r1, r2) ->
+        (match visit r1 ns k mk with None -> visit r2 ns k mk | r -> k r mk)
 
-let interp_cps_m r ns : bool =
-  (* match visit r ns (fun x mk -> mk x) Fun.id with Some [] -> true | _ -> false *)
-  match visit_cps_m r ns (fun x mk -> mk x) Fun.id with
-  | Some [] -> true
-  | _ -> false
+    let interp r ns : bool =
+      (* something like: visit... (fun nsp -> (fun mk -> 1 + mk ())) (fun () -> 0) *)
+      (* match visit r ns (fun x mk -> mk x) Fun.id with Some [] -> true | _ -> false *)
+      match visit r ns (fun x mk -> mk x) Fun.id with
+      | Some [] -> true
+      | _ -> false
+  end
 
-let interp_shift_reset r ns : bool =
-  let rec visit r ns =
-    match r with
-    | Emp -> ret (Some ns)
-    | Atom a ->
-      (match ns with b :: ns1 when a = b -> ret (Some ns1) | _ -> ret None)
-    | Seq (r1, r2) ->
-      let* v = visit r1 ns in
-      (match v with
-      | None -> ret None
-      | Some rest ->
-        let* v = visit r2 rest in
-        ret v)
-    | Disj (r1, r2) ->
-      shift (fun k ->
-          let* v1 = visit r1 ns in
-          match k v1 with
-          | None ->
-            let* a = visit r2 ns in
-            ret (k a)
-          | v -> ret v)
-  in
-  match run (reset (visit r ns)) with Some [] -> true | _ -> false
+  module SR = struct
+    let interp r ns : bool =
+      let rec visit r ns =
+        match r with
+        | Emp -> ret (Some ns)
+        | Atom a ->
+          (match ns with
+          | b :: ns1 when a = b -> ret (Some ns1)
+          | _ -> ret None)
+        | Seq (r1, r2) ->
+          let* v = visit r1 ns in
+          (match v with
+          | None -> ret None
+          | Some rest ->
+            let* v = visit r2 rest in
+            ret v)
+        | Disj (r1, r2) ->
+          shift (fun k ->
+              let* v1 = visit r1 ns in
+              match k v1 with
+              | None ->
+                let* a = visit r2 ns in
+                ret (k a)
+              | v -> ret v)
+      in
+      match run (reset (visit r ns)) with Some [] -> true | _ -> false
+  end
 
-let%expect_test _ =
-  let test r ns =
-    let all_results =
-      [interp r ns; interp_cps r ns; interp_cps_m r ns; interp_shift_reset r ns]
+  let%expect_test _ =
+    let test r ns =
+      let all_results =
+        [
+          Simple.interp r ns; CPS.interp r ns; TwoCPS.interp r ns; SR.interp r ns;
+        ]
+      in
+      if List.for_all Fun.id all_results || not (List.exists Fun.id all_results)
+      then Format.printf "%b@." (List.hd all_results)
+      else all_results |> [%derive.show: bool list] |> print_endline
     in
-    if List.for_all Fun.id all_results || not (List.exists Fun.id all_results)
-    then Format.printf "%b@." (List.hd all_results)
-    else all_results |> [%derive.show: bool list] |> print_endline
-  in
-  test Emp [];
-  [%expect {| true |}];
-  test Emp [1];
-  [%expect {| false |}];
+    test Emp [];
+    [%expect {| true |}];
+    test Emp [1];
+    [%expect {| false |}];
 
-  test (Atom 1) [1];
-  [%expect {| true |}];
-  test (Atom 1) [2];
-  [%expect {| false |}];
+    test (Atom 1) [1];
+    [%expect {| true |}];
+    test (Atom 1) [2];
+    [%expect {| false |}];
 
-  test (Seq (Emp, Atom 2)) [2];
-  [%expect {| true |}];
-  test (Seq (Atom 2, Emp)) [2];
-  [%expect {| true |}];
-  test (Seq (Atom 1, Atom 2)) [1; 2];
-  [%expect {| true |}];
-  test (Seq (Atom 1, Atom 2)) [1; 3];
-  [%expect {| false |}];
-  (* assoc *)
-  test (Seq (Seq (Atom 1, Atom 3), Atom 2)) [1; 3; 2];
-  [%expect {| true |}];
-  test (Seq (Atom 1, Seq (Atom 3, Atom 2))) [1; 3; 2];
-  [%expect {| true |}]
+    test (Seq (Emp, Atom 2)) [2];
+    [%expect {| true |}];
+    test (Seq (Atom 2, Emp)) [2];
+    [%expect {| true |}];
+    test (Seq (Atom 1, Atom 2)) [1; 2];
+    [%expect {| true |}];
+    test (Seq (Atom 1, Atom 2)) [1; 3];
+    [%expect {| false |}];
+    (* assoc *)
+    test (Seq (Seq (Atom 1, Atom 3), Atom 2)) [1; 3; 2];
+    [%expect {| true |}];
+    test (Seq (Atom 1, Seq (Atom 3, Atom 2))) [1; 3; 2];
+    [%expect {| true |}]
+end
