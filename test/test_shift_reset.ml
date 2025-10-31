@@ -86,40 +86,70 @@ let interp r ns : bool =
   in
   match visit r ns with Some [] -> true | _ -> false
 
+let rec visit_cps r ns k : int list option =
+  match r with
+  | Emp -> k (Some ns)
+  | Atom a -> k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None)
+  | Seq (r1, r2) ->
+    visit_cps r1 ns (function None -> None | Some rest -> visit_cps r2 rest k)
+  | Disj (r1, r2) ->
+    (match visit_cps r1 ns k with None -> visit_cps r2 ns k | r -> k r)
+
 let interp_cps r ns : bool =
-  let rec visit r ns k : int list option =
-    match r with
-    | Emp -> k (Some ns)
-    | Atom a -> k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None)
-    | Seq (r1, r2) ->
-      visit r1 ns (function None -> None | Some rest -> visit r2 rest k)
-    | Disj (r1, r2) ->
-      (match visit r1 ns k with None -> visit r2 ns k | r -> k r)
-  in
-  match visit r ns Fun.id with Some [] -> true | _ -> false
+  match visit_cps r ns Fun.id with Some [] -> true | _ -> false
+
+let rec visit_cps_m r ns k mk : int list option =
+  match r with
+  | Emp -> k (Some ns) mk
+  | Atom a -> k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None) mk
+  | Seq (r1, r2) ->
+    visit_cps_m r1 ns
+      (fun v1 mk1 ->
+        match v1 with None -> None | Some rest -> visit_cps_m r2 rest k mk1)
+      mk
+  | Disj (r1, r2) ->
+    (match visit_cps_m r1 ns k mk with
+    | None -> visit_cps_m r2 ns k mk
+    | r -> k r mk)
 
 let interp_cps_m r ns : bool =
-  let rec visit r ns k mk : int list option =
+  (* match visit r ns (fun x mk -> mk x) Fun.id with Some [] -> true | _ -> false *)
+  match visit_cps_m r ns (fun x mk -> mk x) Fun.id with
+  | Some [] -> true
+  | _ -> false
+
+let interp_shift_reset r ns : bool =
+  let rec visit r ns =
     match r with
-    | Emp -> k (Some ns) mk
+    | Emp -> ret (Some ns)
     | Atom a ->
-      k (match ns with b :: ns1 when a = b -> Some ns1 | _ -> None) mk
+      (match ns with b :: ns1 when a = b -> ret (Some ns1) | _ -> ret None)
     | Seq (r1, r2) ->
-      visit r1 ns
-        (fun v1 mk1 ->
-          match v1 with None -> None | Some rest -> visit r2 rest k mk1)
-        mk
+      let* v = visit r1 ns in
+      (match v with
+      | None -> ret None
+      | Some rest ->
+        let* v = visit r2 rest in
+        ret v)
     | Disj (r1, r2) ->
-      (match visit r1 ns k mk with None -> visit r2 ns k mk | r -> k r mk)
+      shift (fun k ->
+          let* v1 = visit r1 ns in
+          match k v1 with
+          | None ->
+            let* a = visit r2 ns in
+            ret (k a)
+          | v -> ret v)
   in
-  match visit r ns (fun x mk -> mk x) Fun.id with Some [] -> true | _ -> false
+  match run (reset (visit r ns)) with Some [] -> true | _ -> false
 
 let%expect_test _ =
   let test r ns =
-    let pr r = r |> [%derive.show: bool] |> print_endline in
-    (* interp r ns |> pr; *)
-    (* interp_cps r ns |> pr; *)
-    interp_cps_m r ns |> pr
+    let all_results =
+      [interp r ns; interp_cps r ns; interp_cps_m r ns; interp_shift_reset r ns]
+    in
+    if List.for_all Fun.id all_results || not (List.exists Fun.id all_results)
+    then Format.printf "%b@." (List.hd all_results)
+    else all_results |> [%derive.show: bool list] |> print_endline
   in
   test Emp [];
   [%expect {| true |}];
