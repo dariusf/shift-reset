@@ -99,7 +99,7 @@ module Regex = struct
       | Seq (r1, r2) ->
         visit r1 ns (function None -> None | Some rest -> visit r2 rest k)
       | Disj (r1, r2) ->
-        (match visit r1 ns k with None -> visit r2 ns k | r -> k r)
+        (match visit r1 ns k with None -> visit r2 ns k | r -> r)
 
     let interp r ns : bool =
       match visit r ns Fun.id with Some [] -> true | _ -> false
@@ -117,7 +117,7 @@ module Regex = struct
             match v1 with None -> None | Some rest -> visit r2 rest k mk1)
           mk
       | Disj (r1, r2) ->
-        (match visit r1 ns k mk with None -> visit r2 ns k mk | r -> k r mk)
+        (match visit r1 ns k mk with None -> visit r2 ns k mk | r -> r)
 
     let interp r ns : bool =
       (* something like: visit... (fun nsp -> (fun mk -> 1 + mk ())) (fun () -> 0) *)
@@ -157,14 +157,31 @@ module Regex = struct
 
   let%expect_test _ =
     let test r ns =
-      let all_results =
+      let functions =
         [
-          Simple.interp r ns; CPS.interp r ns; TwoCPS.interp r ns; SR.interp r ns;
+          (Simple.interp, "simple");
+          (CPS.interp, "CPS");
+          (TwoCPS.interp, "2CPS");
+          (SR.interp, "SR");
         ]
       in
-      if List.for_all Fun.id all_results || not (List.exists Fun.id all_results)
-      then Format.printf "%b@." (List.hd all_results)
-      else all_results |> [%derive.show: bool list] |> print_endline
+      let all_results =
+        functions
+        |> List.map (fun (f, name) ->
+               ((try Some (f r ns) with _ -> None), name))
+      in
+      let to_bool (o, _) = match o with Some b -> b | None -> false in
+      let all_true = List.for_all to_bool all_results in
+      let all_false = not (List.exists to_bool all_results) in
+      if all_true || all_false then
+        Format.printf "%b@." (List.hd all_results |> to_bool)
+      else
+        all_results
+        |> List.iter (fun (r, n) ->
+               let outcome =
+                 match r with None -> "fail" | Some b -> string_of_bool b
+               in
+               Format.printf "%7s: %s@." n outcome)
     in
     test Emp [];
     [%expect {| true |}];
@@ -184,9 +201,56 @@ module Regex = struct
     [%expect {| true |}];
     test (Seq (Atom 1, Atom 2)) [1; 3];
     [%expect {| false |}];
+
     (* assoc *)
     test (Seq (Seq (Atom 1, Atom 3), Atom 2)) [1; 3; 2];
     [%expect {| true |}];
     test (Seq (Atom 1, Seq (Atom 3, Atom 2))) [1; 3; 2];
-    [%expect {| true |}]
+    [%expect {| true |}];
+
+    (* disj *)
+    test (Seq (Disj (Atom 1, Atom 2), Atom 3)) [1; 3];
+    [%expect
+      {|
+      simple: fail
+         CPS: true
+        2CPS: true
+          SR: true
+      |}];
+    test (Seq (Disj (Atom 1, Atom 2), Atom 3)) [2; 3];
+    [%expect
+      {|
+      simple: fail
+         CPS: true
+        2CPS: true
+          SR: true
+      |}];
+
+    (* disj comm *)
+    test (Seq (Disj (Atom 2, Atom 1), Atom 3)) [1; 3];
+    [%expect
+      {|
+      simple: fail
+         CPS: true
+        2CPS: true
+          SR: true
+      |}];
+    test (Seq (Disj (Atom 2, Atom 1), Atom 3)) [2; 3];
+    [%expect
+      {|
+      simple: fail
+         CPS: true
+        2CPS: true
+          SR: true
+      |}];
+
+    (* disj idem *)
+    test (Disj (Atom 1, Atom 1)) [1];
+    [%expect
+      {|
+      simple: fail
+         CPS: true
+        2CPS: true
+          SR: true
+      |}]
 end
