@@ -168,7 +168,7 @@ module Regex = struct
       let all_results =
         functions
         |> List.map (fun (f, name) ->
-               ((try Some (f r ns) with _ -> None), name))
+            ((try Some (f r ns) with _ -> None), name))
       in
       let to_bool (o, _) = match o with Some b -> b | None -> false in
       let all_true = List.for_all to_bool all_results in
@@ -178,10 +178,10 @@ module Regex = struct
       else
         all_results
         |> List.iter (fun (r, n) ->
-               let outcome =
-                 match r with None -> "fail" | Some b -> string_of_bool b
-               in
-               Format.printf "%7s: %s@." n outcome)
+            let outcome =
+              match r with None -> "fail" | Some b -> string_of_bool b
+            in
+            Format.printf "%7s: %s@." n outcome)
     in
     test Emp [];
     [%expect {| true |}];
