@@ -127,6 +127,16 @@ module Regex = struct
       | _ -> false
   end
 
+  let map f m =
+    let* a = m in
+    ret (f a)
+
+  let ( <&> ) m f = map f m
+
+  let or_else m f =
+    let* v = m in
+    match v with None -> f () | Some _ -> ret v
+
   module SR = struct
     let interp r ns : bool =
       let rec visit r ns =
@@ -145,12 +155,8 @@ module Regex = struct
             ret v)
         | Disj (r1, r2) ->
           shift (fun k ->
-              let* v1 = visit r1 ns in
-              match k v1 with
-              | None ->
-                let* a = visit r2 ns in
-                ret (k a)
-              | v -> ret v)
+              let* v1 = reset (visit r1 ns <&> k) in
+              match v1 with None -> visit r2 ns <&> k | v -> ret v)
       in
       match run (reset (visit r ns)) with Some [] -> true | _ -> false
   end
