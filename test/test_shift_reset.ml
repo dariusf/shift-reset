@@ -1,7 +1,5 @@
 open Shift_reset.ShiftReset
 
-let ( let* ) = bind
-
 let rec append : ('a list, 'a list, 'a list, 'a list -> ('b, 'b, 'a list) t) fn
     =
  fun xs ->
@@ -126,16 +124,6 @@ module Regex = struct
       | Some [] -> true
       | _ -> false
   end
-
-  let map f m =
-    let* a = m in
-    ret (f a)
-
-  let ( <&> ) m f = map f m
-
-  let or_else m f =
-    let* v = m in
-    match v with None -> f () | Some _ -> ret v
 
   module SR = struct
     let interp r ns : bool =

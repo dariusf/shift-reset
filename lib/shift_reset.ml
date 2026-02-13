@@ -14,6 +14,12 @@ module type GM = sig
   (* bind composes changes in answer type *)
   val bind :
     ('b, 'g, 'sigma) t -> ('sigma -> ('a, 'b, 'tau) t) -> ('a, 'g, 'tau) t
+
+  val ( let* ) :
+    ('b, 'g, 'sigma) t -> ('sigma -> ('a, 'b, 'tau) t) -> ('a, 'g, 'tau) t
+
+  val map : ('a -> 'b) -> ('i, 'o, 'a) t -> ('i, 'o, 'b) t
+  val ( <&> ) : ('i, 'o, 'a) t -> ('a -> 'b) -> ('i, 'o, 'b) t
 end
 
 module ShiftReset : sig
@@ -38,4 +44,11 @@ end = struct
   let reset (C f) = C (fun k -> k (f id))
   let shift f = C (fun k -> unC (f k) id)
   let run (C f) = f id
+  let ( let* ) = bind
+
+  let map f m =
+    let* a = m in
+    ret (f a)
+
+  let ( <&> ) m f = map f m
 end
